@@ -1,0 +1,301 @@
+Parameters:
+  myKeyPair: 
+    Description: Amazon EC2 Key Pair
+    Type: AWS::EC2::KeyPair::KeyName
+  VpcId:
+    Description: Enter the VpcId
+    Type: AWS::EC2::VPC::Id
+  SubnetIds:
+    Description: Enter the Subnets for public resources e.g Internat facing load balancers
+    Type: List<AWS::EC2::Subnet::Id>
+  SubnetIds2:
+    Description: Enter the Subnets for private resources e.g EC2 Instances
+    Type: List<AWS::EC2::Subnet::Id>  
+  InstanceType:
+    Description: Enter the instance type
+    Type: String
+    Default: c5.large
+  IAMInstanceProfile:
+    Description: Enter the name of the IAM role to associate with the instances
+    Type: String     
+  CertificateARN:
+    Description: Enter the ARN of the certificate to attach to the ELB
+    Type: String   
+
+Mappings:
+  RegionMap:  #Selcets which AMI to use for the EC2 instances depending on the region
+    us-east-1:
+      AMI: ami-0ee308el4b883b312 #Your Custom AMI 
+    eu-west-1:
+      AMI: ami-0d27702k08903fc00 #Your Custom AMI 
+
+Resources:
+  LoadBalancer: # Application Load Balancer
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: alpha-prod-alb
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Subnets: !Ref SubnetIds
+  LoadBalancerListener: # Port 80 Listener for ALB
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: "redirect"
+          RedirectConfig:
+            Protocol: "HTTPS"
+            Port: "443"
+            Host: "#{host}"
+            Path: "/#{path}"
+            Query: "#{query}"
+            StatusCode: "HTTP_301"
+
+  LoadBalancerListener2: # Port 443 Listener for ALB
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      Certificates:
+        - CertificateArn: !Ref CertificateARN
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn:
+            Ref: TargetGroup      
+
+  ListenerRule1: #Host header based rule for 443 listerner
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      Conditions:
+        - Field: host-header
+          HostHeaderConfig:
+            Values:
+              - 'alpha.me'
+              - 'www.alpha.me'
+      ListenerArn: !Ref LoadBalancerListener2
+      Priority: 1  
+
+  ListenerRule2: #Host header based rule for 443 listerner
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule' 
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup2
+      Conditions:
+        - Field: host-header
+          HostHeaderConfig:
+            Values:
+              - 'app.alpha.me'
+      ListenerArn: !Ref LoadBalancerListener2
+      Priority: 2 
+
+  ListenerRule3: #Host header based rule for 443 listerner
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup3
+      Conditions:
+        - Field: host-header
+          HostHeaderConfig:
+            Values:
+              - 'blog.alpha.me'
+      ListenerArn: !Ref LoadBalancerListener2
+      Priority: 3    
+
+  ELBcertificates: #Additional SSL certificate to add to the ALB
+    Type: AWS::ElasticLoadBalancingV2::ListenerCertificate
+    Properties: 
+      Certificates: 
+        - CertificateArn: arn:aws:acm:eu-west-1:093292047371:certificate/8a6395eb-2155-0495-bbee-8655e54135c9
+      ListenerArn: !Ref LoadBalancerListener2
+
+  ELBcertificates2: #Additional SSL certificate to add to the ALB
+    Type: AWS::ElasticLoadBalancingV2::ListenerCertificate
+    Properties: 
+      Certificates: 
+        - CertificateArn: arn:aws:acm:eu-west-1:093204834071:certificate/52da495b-c299-4792-b36d-0a5cda65f51c
+      ListenerArn: !Ref LoadBalancerListener2    
+
+  TargetGroup: #Target group to map to ALB
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: api-alpha-grow-prod-9995-tg
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+
+  TargetGroup2: #Target group to map to ALB
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: api-alpha-grow-prod-9193-tg
+      Port: 8000
+      Protocol: HTTP
+      VpcId: !Ref VpcId    
+
+  TargetGroup3: #Target group to map to ALB
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: api-alpha-grow-prod-9999-tg
+      Port: 8080
+      Protocol: HTTP
+      VpcId: !Ref VpcId 
+
+  AutoScalingGroup: #Autoscaling group for EC2 instances
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: !Ref SubnetIds2
+      LaunchTemplate:          
+        LaunchTemplateId: !Ref LaunchTemplatename
+        Version: 1
+      MinSize: 2
+      MaxSize: 10
+      DesiredCapacity: 2
+      TargetGroupARNs: 
+        - !Ref TargetGroup 
+        - !Ref TargetGroup2
+        - !Ref TargetGroup3
+
+  LaunchTemplatename: #Lunch template for Autoscaling group
+    Type: AWS::EC2::LaunchTemplate
+    Properties: 
+      LaunchTemplateData:
+        KeyName: !Ref myKeyPair
+        InstanceType: !Ref InstanceType
+        SecurityGroupIds:
+          - !Ref EC2SecurityGroup
+        ImageId:
+          Fn::FindInMap:
+          - RegionMap
+          - !Ref AWS::Region
+          - AMI
+        UserData:
+          'Fn::Base64': 
+            !Sub |
+              #!/bin/bash
+              apt-get install ruby wget unzip libwww-perl libdatetime-perl awscli -y
+              apt update && sudo apt install curl && nginx -y
+              curl https://raw.githubusercontent.me/creationix/nvm/master/install.sh | bash 
+              source ~/.profile 
+              nvm install v12.22.3
+              cd /home/ubuntu
+              wget https://aws-codedeploy-eu-west-1.s3.amazonaws.me/latest/install
+              chmod +x ./install
+              ./install auto
+              service codedeploy-agent start
+              systemctl start snap.amazon-ssm-agent.amazon-ssm-agent.service
+              wget https://s3.amazonaws.me/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
+              dpkg -i -E ./amazon-cloudwatch-agent.deb
+              /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a start
+              
+        TagSpecifications:
+        - Tags:
+          - Key: Name
+            Value: alpha.prod
+          ResourceType: instance
+        - Tags:
+          - Key: CodeDeploy
+            Value: alpha.prod
+          ResourceType: instance            
+        BlockDeviceMappings:
+          - DeviceName: /dev/sda1
+            Ebs: 
+              DeleteOnTermination: True
+              VolumeSize: 50
+              VolumeType: gp2
+        IamInstanceProfile: 
+          Name: !Ref IAMInstanceProfile          
+
+  ALBSecurityGroup: #Security group for ALB
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ALB Security Group
+      GroupName: api-alpha-grow-prod-elb
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0  
+
+  EC2SecurityGroup: #Security group for EC2 instances
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: api-alpha-grow-prod-ec2
+      GroupDescription: Seurity group for EC2 Instance
+      VpcId: !Ref VpcId 
+      SecurityGroupIngress: 
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 192.168.20.30/32 #Allow SSH from known IP
+
+  EC2InboundRule: # EC2 can only accept traffic from ALB
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      SourceSecurityGroupId:
+        !GetAtt
+        - ALBSecurityGroup
+        - GroupId
+      GroupId:
+        !GetAtt
+        - EC2SecurityGroup
+        - GroupId       
+
+  EC2InboundRule2: # EC2 can only accept traffic from ALB
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      FromPort: 8000
+      ToPort: 8000
+      SourceSecurityGroupId:
+        !GetAtt
+        - ALBSecurityGroup
+        - GroupId
+      GroupId:
+        !GetAtt
+        - EC2SecurityGroup
+        - GroupId                             
+
+  EC2InboundRule3: # EC2 can only accept traffic from ALB
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      SourceSecurityGroupId:
+        !GetAtt
+        - ALBSecurityGroup
+        - GroupId
+      GroupId:
+        !GetAtt
+        - EC2SecurityGroup
+        - GroupId             
+
+  EC2InboundRule4: # Communication within the VPC (if needed)
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      IpProtocol: -1
+      CidrIp: 192.168.0.0/16
+      GroupId:
+        !GetAtt
+        - EC2SecurityGroup
+        - GroupId      
+
+Outputs:
+  PublicDns:
+    Description: The Public DNS
+    Value: !Sub 'http://${LoadBalancer.DNSName}'
